@@ -29,10 +29,10 @@ jobs:
         run: dotnet test backend/tests/DeliveryTracker.Api.Tests/DeliveryTracker.Api.Tests.csproj
 
   # ====================================================
-  # JOB 2: DEPLOY DEV INFRASTRUCTURE & APPS
+  # JOB 2: DEPLOY DEV (INFRASTRUCTURE + DOCKER BUILD & PUSH)
   # ====================================================
   deploy-dev:
-    name: 🚀 Provision & Deploy DEV
+    name: 🚀 Build Docker & Deploy DEV
     needs: ci-test
     runs-on: ubuntu-latest
     environment: dev
@@ -52,19 +52,49 @@ jobs:
         with:
           terraform_version: 1.7.5
 
-      - name: Terraform Init (DEV)
+      # Step 1: Provision ACR and Base Infra via Terraform
+      - name: Terraform Init & Apply Base Infra (DEV)
         working-directory: ./terraform/environments/dev
-        run: terraform init
+        run: |
+          terraform init
+          terraform apply -auto-approve -var="environment=dev"
 
-      - name: Terraform Apply (DEV)
+      # Step 2: Log in to Azure Container Registry
+      - name: Log in to Azure Container Registry (ACR)
+        uses: azure/docker-login@v1
+        with:
+          login-server: crdeliverytrackerdev01.azurecr.io
+          username: ${{ secrets.ACR_DEV_USERNAME }}
+          password: ${{ secrets.ACR_DEV_PASSWORD }}
+
+      # Step 3: Build & Push Backend Docker Image
+      - name: Build & Push Backend Docker Image (DEV)
+        run: |
+          docker build -t crdeliverytrackerdev01.azurecr.io/deliverytracker-backend:${{ github.sha }} -t crdeliverytrackerdev01.azurecr.io/deliverytracker-backend:latest ./backend
+          docker push crdeliverytrackerdev01.azurecr.io/deliverytracker-backend:${{ github.sha }}
+          docker push crdeliverytrackerdev01.azurecr.io/deliverytracker-backend:latest
+
+      # Step 4: Build & Push Frontend Docker Image
+      - name: Build & Push Frontend Docker Image (DEV)
+        run: |
+          docker build -t crdeliverytrackerdev01.azurecr.io/deliverytracker-frontend:${{ github.sha }} -t crdeliverytrackerdev01.azurecr.io/deliverytracker-frontend:latest ./frontend
+          docker push crdeliverytrackerdev01.azurecr.io/deliverytracker-frontend:${{ github.sha }}
+          docker push crdeliverytrackerdev01.azurecr.io/deliverytracker-frontend:latest
+
+      # Step 5: Update Container Apps with new Docker Image Tags
+      - name: Deploy Container Apps with Built Images (DEV)
         working-directory: ./terraform/environments/dev
-        run: terraform apply -auto-approve -var="environment=dev"
+        run: |
+          terraform apply -auto-approve \
+            -var="environment=dev" \
+            -var="backend_image=crdeliverytrackerdev01.azurecr.io/deliverytracker-backend:${{ github.sha }}" \
+            -var="frontend_image=crdeliverytrackerdev01.azurecr.io/deliverytracker-frontend:${{ github.sha }}"
 
   # ====================================================
-  # JOB 3: DEPLOY UAT INFRASTRUCTURE & APPS
+  # JOB 3: DEPLOY UAT (INFRASTRUCTURE + DOCKER BUILD & PUSH)
   # ====================================================
   deploy-uat:
-    name: 🧪 Provision & Deploy UAT
+    name: 🧪 Build Docker & Deploy UAT
     needs: deploy-dev
     runs-on: ubuntu-latest
     environment: uat
@@ -81,25 +111,43 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init & Apply Base Infra (UAT)
+        working-directory: ./terraform/environments/uat
+        run: |
+          terraform init
+          terraform apply -auto-approve -var="environment=uat"
+
+      - name: Log in to ACR (UAT)
+        uses: azure/docker-login@v1
         with:
-          terraform_version: 1.7.5
+          login-server: crdeliverytrackeruat01.azurecr.io
+          username: ${{ secrets.ACR_UAT_USERNAME }}
+          password: ${{ secrets.ACR_UAT_PASSWORD }}
 
-      - name: Terraform Init (UAT)
-        working-directory: ./terraform/environments/uat
-        run: terraform init
+      - name: Build & Push Images (UAT)
+        run: |
+          docker build -t crdeliverytrackeruat01.azurecr.io/deliverytracker-backend:${{ github.sha }} ./backend
+          docker push crdeliverytrackeruat01.azurecr.io/deliverytracker-backend:${{ github.sha }}
+          docker build -t crdeliverytrackeruat01.azurecr.io/deliverytracker-frontend:${{ github.sha }} ./frontend
+          docker push crdeliverytrackeruat01.azurecr.io/deliverytracker-frontend:${{ github.sha }}
 
-      - name: Terraform Apply (UAT)
+      - name: Deploy Container Apps with Built Images (UAT)
         working-directory: ./terraform/environments/uat
-        run: terraform apply -auto-approve -var="environment=uat"
+        run: |
+          terraform apply -auto-approve \
+            -var="environment=uat" \
+            -var="backend_image=crdeliverytrackeruat01.azurecr.io/deliverytracker-backend:${{ github.sha }}" \
+            -var="frontend_image=crdeliverytrackeruat01.azurecr.io/deliverytracker-frontend:${{ github.sha }}"
 
   # ====================================================
-  # JOB 4: DEPLOY PROD INFRASTRUCTURE (Manual Approval Gate)
+  # JOB 4: DEPLOY PROD (INFRASTRUCTURE + DOCKER BUILD & PUSH)
   # ====================================================
   deploy-prod:
-    name: 🛡️ Provision & Deploy PROD
+    name: 🛡️ Build Docker & Deploy PROD
     needs: deploy-uat
     runs-on: ubuntu-latest
-    environment: production # Requires manual reviewer approval in GitHub Environment Settings
+    environment: production # Manual Approval Gate
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -113,13 +161,31 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init & Apply Base Infra (PROD)
+        working-directory: ./terraform/environments/prod
+        run: |
+          terraform init
+          terraform apply -auto-approve -var="environment=prod"
+
+      - name: Log in to ACR (PROD)
+        uses: azure/docker-login@v1
         with:
-          terraform_version: 1.7.5
+          login-server: crdeliverytrackerprod01.azurecr.io
+          username: ${{ secrets.ACR_PROD_USERNAME }}
+          password: ${{ secrets.ACR_PROD_PASSWORD }}
 
-      - name: Terraform Init (PROD)
-        working-directory: ./terraform/environments/prod
-        run: terraform init
+      - name: Build & Push Images (PROD)
+        run: |
+          docker build -t crdeliverytrackerprod01.azurecr.io/deliverytracker-backend:${{ github.sha }} ./backend
+          docker push crdeliverytrackerprod01.azurecr.io/deliverytracker-backend:${{ github.sha }}
+          docker build -t crdeliverytrackerprod01.azurecr.io/deliverytracker-frontend:${{ github.sha }} ./frontend
+          docker push crdeliverytrackerprod01.azurecr.io/deliverytracker-frontend:${{ github.sha }}
 
-      - name: Terraform Apply (PROD)
+      - name: Deploy Container Apps with Built Images (PROD)
         working-directory: ./terraform/environments/prod
-        run: terraform apply -auto-approve -var="environment=prod"
+        run: |
+          terraform apply -auto-approve \
+            -var="environment=prod" \
+            -var="backend_image=crdeliverytrackerprod01.azurecr.io/deliverytracker-backend:${{ github.sha }}" \
+            -var="frontend_image=crdeliverytrackerprod01.azurecr.io/deliverytracker-frontend:${{ github.sha }}"

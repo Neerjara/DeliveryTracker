@@ -1,4 +1,4 @@
-name: Terraform PR Validation (Plan & Lint)
+name: CI - Pull Request Validation (Tests, Docker Build & Terraform Plan)
 
 on:
   pull_request:
@@ -11,8 +11,36 @@ permissions:
   pull-requests: write
 
 jobs:
-  validate-and-plan:
-    name: Terraform Format, Validate & Plan
+  # ====================================================
+  # JOB 1: CI CODE TEST & DOCKER IMAGE BUILD VALIDATION
+  # ====================================================
+  ci-build-and-test:
+    name: 🧪 CI - Run Unit Tests & Build Docker Images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run Backend xUnit Unit Tests
+        run: dotnet test backend/tests/DeliveryTracker.Api.Tests/DeliveryTracker.Api.Tests.csproj
+
+      - name: 🐳 Test Build Backend Docker Image (CI Validation)
+        run: docker build -t deliverytracker-backend:test ./backend
+
+      - name: 🐳 Test Build Frontend Docker Image (CI Validation)
+        run: docker build -t deliverytracker-frontend:test ./frontend
+
+  # ====================================================
+  # JOB 2: TERRAFORM LINT & PLAN
+  # ====================================================
+  terraform-plan:
+    name: 📋 CI - Terraform Format, Validate & Plan
+    needs: ci-build-and-test
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -45,33 +73,5 @@ jobs:
         run: terraform validate
 
       - name: Terraform Plan (${{ matrix.environment }})
-        id: plan
         working-directory: ./terraform/environments/${{ matrix.environment }}
-        run: |
-          terraform plan -no-color -out=tfplan-${{ matrix.environment }} -var="environment=${{ matrix.environment }}"
-
-      - name: Post Plan to PR Comment
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fs = require('fs');
-            const env = '${{ matrix.environment }}';
-            const output = `#### Terraform Plan Status (${env.toUpperCase()}): \`Success\` 🤖
-            *Pusher: @${{ github.actor }}*
-            *Action: \`${{ github.event_name }}\`*
-
-            <details><summary>Show Plan (${env})</summary>
-
-            \`\`\`hcl
-            Terraform plan generated successfully for ${env}.
-            \`\`\`
-
-            </details>`;
-
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: output
-            });
+        run: terraform plan -no-color -var="environment=${{ matrix.environment }}"

@@ -23,24 +23,42 @@ if ($LASTEXITCODE -ne 0) {
     az login
 }
 
-# 2. Run Terraform for target environment
+# 2. Run Terraform Base Infrastructure setup
 $envDir = "terraform/environments/$Environment"
 if (-not (Test-Path $envDir)) {
     Write-Error "Environment directory '$envDir' not found."
 }
 
-Write-Host "Initializing Terraform in $envDir..." -ForegroundColor Yellow
+Write-Host "Step 1: Initializing & Applying Base Infrastructure (ACR, Key Vault, App Insights)..." -ForegroundColor Yellow
 Push-Location $envDir
 
 try {
     terraform init
     if ($LASTEXITCODE -ne 0) { throw "Terraform init failed." }
 
-    Write-Host "Applying Terraform configuration for $Environment..." -ForegroundColor Green
     terraform apply -auto-approve -var="environment=$Environment" -var="location=$Location"
-    if ($LASTEXITCODE -ne 0) { throw "Terraform apply failed." }
+    if ($LASTEXITCODE -ne 0) { throw "Base terraform apply failed." }
 
-    Write-Host "🎉 Successfully deployed DeliveryTracker Landing Zone [$Environment]!" -ForegroundColor Green
+    $acrName = "crdeliverytracker${Environment}01"
+    Write-Host "Step 2: Building Backend Docker Image in cloud ACR ($acrName)..." -ForegroundColor Yellow
+    Pop-Location
+    az acr build --registry $acrName --image "deliverytracker-backend:latest" ./backend
+    if ($LASTEXITCODE -ne 0) { throw "Backend ACR build failed." }
+
+    Write-Host "Step 3: Building Frontend Docker Image in cloud ACR ($acrName)..." -ForegroundColor Yellow
+    az acr build --registry $acrName --image "deliverytracker-frontend:latest" ./frontend
+    if ($LASTEXITCODE -ne 0) { throw "Frontend ACR build failed." }
+
+    Write-Host "Step 4: Updating Container Apps with newly built Docker images..." -ForegroundColor Yellow
+    Push-Location $envDir
+    $acrServer = "$acrName.azurecr.io"
+    terraform apply -auto-approve `
+        -var="environment=$Environment" `
+        -var="location=$Location" `
+        -var="backend_image=$acrServer/deliverytracker-backend:latest" `
+        -var="frontend_image=$acrServer/deliverytracker-frontend:latest"
+
+    Write-Host "🎉 Successfully built Docker images & deployed Container Apps [$Environment]!" -ForegroundColor Green
 }
 finally {
     Pop-Location
