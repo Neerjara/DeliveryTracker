@@ -1,0 +1,111 @@
+name: Enterprise CD - Multi-Environment Deployment (DEV -> UAT -> PROD)
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ----------------------------------------------------
+  # STAGE 1: CI BUILD & xUnit TESTS
+  # ----------------------------------------------------
+  build-and-test:
+    name: Build & Test Microservices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run Backend xUnit Tests
+        run: dotnet test backend/tests/DeliveryTracker.Api.Tests/DeliveryTracker.Api.Tests.csproj
+
+  # ----------------------------------------------------
+  # STAGE 2: DEPLOY TO DEV ENVIRONMENT
+  # ----------------------------------------------------
+  deploy-dev:
+    name: Deploy to DEV
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC (Entra ID)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform Init & Apply (DEV)
+        working-directory: ./terraform/environments/dev
+        run: |
+          terraform init
+          terraform apply -auto-approve -var="environment=dev"
+
+  # ----------------------------------------------------
+  # STAGE 3: DEPLOY TO UAT ENVIRONMENT
+  # ----------------------------------------------------
+  deploy-uat:
+    name: Deploy to UAT
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    environment: uat
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init & Apply (UAT)
+        working-directory: ./terraform/environments/uat
+        run: |
+          terraform init
+          terraform apply -auto-approve -var="environment=uat"
+
+  # ----------------------------------------------------
+  # STAGE 4: DEPLOY TO PROD ENVIRONMENT (Manual Gate)
+  # ----------------------------------------------------
+  deploy-prod:
+    name: Deploy to PROD
+    needs: deploy-uat
+    runs-on: ubuntu-latest
+    environment: production # Configured in GitHub with Manual Approval Gate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init & Apply (PROD)
+        working-directory: ./terraform/environments/prod
+        run: |
+          terraform init
+          terraform apply -auto-approve -var="environment=prod"

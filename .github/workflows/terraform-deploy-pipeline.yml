@@ -1,0 +1,125 @@
+name: GitHub Actions Infrastructure & Microservices CD (DEV -> UAT -> PROD)
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ====================================================
+  # JOB 1: TEST & SCAN (CI)
+  # ====================================================
+  ci-test:
+    name: 🧪 Run Unit Tests & Security Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run xUnit Unit Tests
+        run: dotnet test backend/tests/DeliveryTracker.Api.Tests/DeliveryTracker.Api.Tests.csproj
+
+  # ====================================================
+  # JOB 2: DEPLOY DEV INFRASTRUCTURE & APPS
+  # ====================================================
+  deploy-dev:
+    name: 🚀 Provision & Deploy DEV
+    needs: ci-test
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform Init (DEV)
+        working-directory: ./terraform/environments/dev
+        run: terraform init
+
+      - name: Terraform Apply (DEV)
+        working-directory: ./terraform/environments/dev
+        run: terraform apply -auto-approve -var="environment=dev"
+
+  # ====================================================
+  # JOB 3: DEPLOY UAT INFRASTRUCTURE & APPS
+  # ====================================================
+  deploy-uat:
+    name: 🧪 Provision & Deploy UAT
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    environment: uat
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform Init (UAT)
+        working-directory: ./terraform/environments/uat
+        run: terraform init
+
+      - name: Terraform Apply (UAT)
+        working-directory: ./terraform/environments/uat
+        run: terraform apply -auto-approve -var="environment=uat"
+
+  # ====================================================
+  # JOB 4: DEPLOY PROD INFRASTRUCTURE (Manual Approval Gate)
+  # ====================================================
+  deploy-prod:
+    name: 🛡️ Provision & Deploy PROD
+    needs: deploy-uat
+    runs-on: ubuntu-latest
+    environment: production # Requires manual reviewer approval in GitHub Environment Settings
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform Init (PROD)
+        working-directory: ./terraform/environments/prod
+        run: terraform init
+
+      - name: Terraform Apply (PROD)
+        working-directory: ./terraform/environments/prod
+        run: terraform apply -auto-approve -var="environment=prod"
